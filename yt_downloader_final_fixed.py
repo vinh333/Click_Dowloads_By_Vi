@@ -48,6 +48,8 @@ def analyze_playlist():
                 "quiet": True,
                 "extract_flat": False,
                 "skip_download": True,
+                "ignoreerrors": True,
+                "no_warnings": True,
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -76,6 +78,9 @@ def analyze_playlist():
                         results = list(executor.map(extract_entry, entries))
 
                     playlist_videos = [v for v in results if v]
+                    for idx, v in enumerate(playlist_videos, 1):
+                        print(f"Video {idx}: {v['title']}")
+                    print(f"Tìm thấy {len(playlist_videos)} video.")
 
                 else:
                     playlist_title = re.sub(
@@ -107,8 +112,8 @@ def analyze_playlist():
 
                 update_progress(f"✅ Tìm thấy {len(playlist_videos)} video.", "green")
 
-        except Exception as e:
-            update_progress(f"❌ Lỗi: {str(e)}", "red")
+        except Exception:
+            update_progress("❌ Có lỗi khi phân tích playlist, nhưng đã bỏ qua.", "red")
 
     threading.Thread(target=run_analysis).start()
 
@@ -141,14 +146,14 @@ def download_audio_and_thumbnail(video, target_folder):
         "writethumbnail": True,
         "quiet": True,
         "ignoreerrors": True,
+        "no_warnings": True,
         "ffmpeg_location": ffmpeg_dir,
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([video_url])
-    except Exception as e:
-        update_progress(f"❌ Lỗi tải {title}: {str(e)}", "red")
+    except Exception:
         return None
 
     thumb_path = None
@@ -166,21 +171,17 @@ def download_audio_and_thumbnail(video, target_folder):
             if os.path.exists(fallback_path):
                 thumb_path = fallback_path
         except:
-            update_progress(f"⚠️ Không tải được thumbnail: {title}", "red")
+            pass
 
     return (mp3_file, thumb_path, title)
 
 
 # ====== NHÚNG THUMBNAIL VÀO MP3 ======
 def embed_thumbnail(mp3_path, thumb_path, title):
+    if not mp3_path or not thumb_path:
+        return
     try:
-        if not (
-            mp3_path
-            and thumb_path
-            and os.path.exists(mp3_path)
-            and os.path.exists(thumb_path)
-        ):
-            update_progress(f"⚠️ Thiếu file để nhúng ảnh: {title}", "red")
+        if not os.path.exists(mp3_path) or not os.path.exists(thumb_path):
             return
 
         if thumb_path.endswith(".webp"):
@@ -190,8 +191,7 @@ def embed_thumbnail(mp3_path, thumb_path, title):
                 im.save(jpg_path, "JPEG")
                 os.remove(thumb_path)
                 thumb_path = jpg_path
-            except Exception as e:
-                update_progress(f"❌ Không đổi webp → jpg: {e}", "red")
+            except:
                 return
 
         audio = MP3(mp3_path, ID3=ID3)
@@ -210,8 +210,8 @@ def embed_thumbnail(mp3_path, thumb_path, title):
             os.remove(thumb_path)
 
         update_progress(f"✅ Nhúng xong: {title}", "green")
-    except Exception as e:
-        update_progress(f"❌ Lỗi nhúng thumbnail: {title} - {str(e)}", "red")
+    except:
+        return
 
 
 # ====== TẢI VIDEO ĐƯỢC CHỌN ======
@@ -254,7 +254,7 @@ def download_selected():
                 )
             )
 
-        update_progress("🖼 ️ Nhúng thumbnail vào MP3...", "blue")
+        update_progress("🖼️ Nhúng thumbnail vào MP3...", "blue")
         with ThreadPoolExecutor(max_workers=3) as pool2:
             pool2.map(lambda args: embed_thumbnail(*args), [r for r in results if r])
 
