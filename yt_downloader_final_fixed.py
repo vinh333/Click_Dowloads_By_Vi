@@ -4,6 +4,7 @@ import yt_dlp
 import threading
 import os
 import re
+import unicodedata
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC, error
 from PIL import Image
@@ -20,6 +21,12 @@ video_vars = []
 quality = "192"
 
 
+# ====== HÀM BỎ DẤU ======
+def remove_accents(input_str):
+    nfkd_form = unicodedata.normalize("NFKD", input_str)
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
+
 # ====== HÀM CHỌN THƯ MỤC ======
 def choose_folder():
     global download_folder
@@ -34,7 +41,7 @@ def update_progress(msg, color="blue"):
     progress_label.config(text=msg, fg=color)
 
 
-# ====== PHÂN TÍCH PLAYLIST VỚI ĐA LUỒNG ======
+# ====== PHÂN TÍCH PLAYLIST ======
 def analyze_playlist():
     url = entry_url.get()
     if not url:
@@ -59,9 +66,7 @@ def analyze_playlist():
                 if playlist_info.get("_type") == "playlist":
                     entries = playlist_info.get("entries", [])
                     if not entries:
-                        update_progress(
-                            "❌ Không tìm thấy video nào trong playlist.", "red"
-                        )
+                        update_progress("❌ Không tìm thấy video nào.", "red")
                         return
 
                     playlist_title = re.sub(
@@ -78,8 +83,6 @@ def analyze_playlist():
                         results = list(executor.map(extract_entry, entries))
 
                     playlist_videos = [v for v in results if v]
-                    for idx, v in enumerate(playlist_videos, 1):
-                        print(f"Video {idx}: {v['title']}")
                     print(f"Tìm thấy {len(playlist_videos)} video.")
 
                 else:
@@ -113,20 +116,23 @@ def analyze_playlist():
                 update_progress(f"✅ Tìm thấy {len(playlist_videos)} video.", "green")
 
         except Exception:
-            update_progress("❌ Có lỗi khi phân tích playlist, nhưng đã bỏ qua.", "red")
+            update_progress("❌ Lỗi phân tích playlist.", "red")
 
     threading.Thread(target=run_analysis).start()
 
 
-# ====== HÀM TẢI VIDEO ======
+# ====== TẢI AUDIO VÀ THUMBNAIL ======
 def download_audio_and_thumbnail(video, target_folder):
     import urllib.request
 
-    video_url = f"https://www.youtube.com/watch?v={video['id']}"
     title = video["title"]
+    if remove_diacritics_var.get():
+        title = remove_accents(title)
+
     safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)
     filename_base = os.path.join(target_folder, safe_title)
     mp3_file = f"{filename_base}.mp3"
+    video_url = f"https://www.youtube.com/watch?v={video['id']}"
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     ffmpeg_dir = os.path.join(
@@ -176,14 +182,11 @@ def download_audio_and_thumbnail(video, target_folder):
     return (mp3_file, thumb_path, title)
 
 
-# ====== NHÚNG THUMBNAIL VÀO MP3 ======
+# ====== NHÚNG ẢNH VÀO MP3 ======
 def embed_thumbnail(mp3_path, thumb_path, title):
     if not mp3_path or not thumb_path:
         return
     try:
-        if not os.path.exists(mp3_path) or not os.path.exists(thumb_path):
-            return
-
         if thumb_path.endswith(".webp"):
             jpg_path = thumb_path.replace(".webp", ".jpg")
             try:
@@ -214,7 +217,7 @@ def embed_thumbnail(mp3_path, thumb_path, title):
         return
 
 
-# ====== TẢI VIDEO ĐƯỢC CHỌN ======
+# ====== TẢI VIDEO ĐÃ CHỌN ======
 def download_selected():
     url = entry_url.get()
     if not url or not playlist_videos:
@@ -246,19 +249,20 @@ def download_selected():
     btn_download.config(state=tk.DISABLED)
 
     def threaded_download():
-        update_progress("🔁 Đang tải audio + thumbnail...", "orange")
-        with ThreadPoolExecutor(max_workers=5) as pool1:
-            results = list(
-                pool1.map(
-                    lambda v: download_audio_and_thumbnail(v, target_folder), selected
-                )
+        download_results = []
+        for idx, v in enumerate(selected, 1):
+            update_progress(
+                f"⬇️ [{idx}/{len(selected)}] Đang tải: {v['title']}", "orange"
             )
+            result = download_audio_and_thumbnail(v, target_folder)
+            if result:
+                download_results.append(result)
 
-        update_progress("🖼️ Nhúng thumbnail vào MP3...", "blue")
+        update_progress("🖼️ Đang nhúng thumbnail...", "blue")
         with ThreadPoolExecutor(max_workers=3) as pool2:
-            pool2.map(lambda args: embed_thumbnail(*args), [r for r in results if r])
+            pool2.map(lambda args: embed_thumbnail(*args), download_results)
 
-        update_progress("🎉 Hoàn tất tải và xử lý!", "green")
+        update_progress("🎉 Hoàn tất tất cả!", "green")
         btn_download.config(state=tk.NORMAL)
 
     threading.Thread(target=threaded_download).start()
@@ -267,7 +271,7 @@ def download_selected():
 # ====== GIAO DIỆN GUI ======
 app = tk.Tk()
 app.title("YouTube Playlist to MP3 Downloader")
-app.geometry("620x700")
+app.geometry("620x720")
 app.resizable(False, False)
 
 tk.Label(app, text="🎵 Nhập link playlist YouTube:", font=("Arial", 12)).pack(pady=5)
@@ -296,6 +300,11 @@ frame_quality.pack(pady=5)
 tk.Label(app, text="📂 Tên thư mục con:", font=("Arial", 10)).pack(pady=3)
 subfolder_entry = tk.Entry(app, width=40)
 subfolder_entry.pack(pady=2)
+
+remove_diacritics_var = tk.BooleanVar(value=False)
+tk.Checkbutton(app, text="🅰️ Bỏ dấu tên bài hát", variable=remove_diacritics_var).pack(
+    pady=2
+)
 
 tk.Button(
     app, text="🔍 Phân tích playlist", font=("Arial", 11), command=analyze_playlist
