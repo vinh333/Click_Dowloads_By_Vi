@@ -11,7 +11,7 @@ from PIL import Image
 import io
 from concurrent.futures import ThreadPoolExecutor
 
-# ====== CẤU HÌNH MẦC ĐỊNH ======
+# ====== CẤU HÌNH MẶC ĐỊNH ======
 default_download_path = os.path.join(os.path.expanduser("~"), "Downloads")
 if not os.path.exists(default_download_path):
     os.makedirs(default_download_path)
@@ -22,10 +22,60 @@ video_vars = []
 quality = "192"
 
 
-# ====== HÀM BỚ DẤU ======
-def remove_accents(input_str):
-    nfkd_form = unicodedata.normalize("NFKD", input_str)
-    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+# ====== HÀM BỌ DẤU ======
+def remove_vietnamese_accents(text):
+    text = unicodedata.normalize("NFD", text)
+    return "".join(char for char in text if unicodedata.category(char) != "Mn")
+
+
+# ====== RESIZE THUMBNAIL ======
+def resize_image_bytes(image_data, size=(128, 128)):
+    image = Image.open(io.BytesIO(image_data))
+    image = image.convert("RGB")
+    image = image.resize(size, Image.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+# ====== Xử LÝ TỐI ƯU PSP TRÊN MỖI FILE ======
+def process_mp3_file(folder_path, filename):
+    name, ext = os.path.splitext(filename)
+    new_name = remove_vietnamese_accents(name) + ext
+
+    old_path = os.path.join(folder_path, filename)
+    new_path = os.path.join(folder_path, new_name)
+
+    renamed = False
+    if new_name != filename:
+        if not os.path.exists(new_path):
+            os.rename(old_path, new_path)
+            renamed = True
+        else:
+            return "trùng tên", new_name
+
+    file_path = new_path if renamed else old_path
+
+    try:
+        audio = MP3(file_path, ID3=ID3)
+        if audio.tags is None:
+            return "thiếu ID3", new_name
+
+        apic_tags = audio.tags.getall("APIC")
+        if not apic_tags:
+            return "không có thumbnail", new_name
+
+        original_apic = apic_tags[0]
+        resized_data = resize_image_bytes(original_apic.data)
+
+        audio.tags.delall("APIC")
+        audio.tags.add(
+            APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=resized_data)
+        )
+        audio.save()
+        return "xong", new_name
+    except Exception as e:
+        return f"lỗi: {e}", new_name
 
 
 # ====== HÀM CHỌN THƯ MỤC ======
@@ -37,7 +87,7 @@ def choose_folder():
         folder_label.config(text=f"📁 Lưu tại: {download_folder}")
 
 
-# ====== CẤP NHẬT TIẾN TRÌNH ======
+# ====== CẬP NHẬT TIến TRÌNH ======
 def update_progress(msg, color="blue"):
     progress_label.config(text=msg, fg=color)
 
@@ -67,7 +117,9 @@ def analyze_playlist():
                 if playlist_info.get("_type") == "playlist":
                     entries = playlist_info.get("entries", [])
                     if not entries:
-                        update_progress("❌ Không tìm thấy video nào.", "red")
+                        update_progress(
+                            "❌ Không tìm thấy video nào trong playlist.", "red"
+                        )
                         return
 
                     playlist_title = re.sub(
@@ -116,7 +168,7 @@ def analyze_playlist():
                 update_progress(f"✅ Tìm thấy {len(playlist_videos)} video.", "green")
 
         except Exception:
-            update_progress("❌ Lỗi phân tích playlist.", "red")
+            update_progress("❌ Có lỗi khi phân tích playlist.", "red")
 
     threading.Thread(target=run_analysis).start()
 
@@ -125,14 +177,11 @@ def analyze_playlist():
 def download_audio_and_thumbnail(video, target_folder):
     import urllib.request
 
+    video_url = f"https://www.youtube.com/watch?v={video['id']}"
     title = video["title"]
-    if remove_diacritics_var.get():
-        title = remove_accents(title)
-
     safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)
     filename_base = os.path.join(target_folder, safe_title)
     mp3_file = f"{filename_base}.mp3"
-    video_url = f"https://www.youtube.com/watch?v={video['id']}"
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     ffmpeg_dir = os.path.join(
@@ -182,11 +231,14 @@ def download_audio_and_thumbnail(video, target_folder):
     return (mp3_file, thumb_path, title)
 
 
-# ====== NHÚNG ẢNH VÀO MP3 (CHUẨN PSP) ======
+# ====== NHÊ THUMBNAIL VÀO MP3 ======
 def embed_thumbnail(mp3_path, thumb_path, title):
     if not mp3_path or not thumb_path:
         return
     try:
+        if not os.path.exists(mp3_path) or not os.path.exists(thumb_path):
+            return
+
         if thumb_path.endswith(".webp"):
             jpg_path = thumb_path.replace(".webp", ".jpg")
             try:
@@ -197,46 +249,41 @@ def embed_thumbnail(mp3_path, thumb_path, title):
             except:
                 return
 
-        im = Image.open(thumb_path).convert("RGB")
-        im = im.resize((128, 128))
-        byte_io = io.BytesIO()
-        im.save(byte_io, format="JPEG")
-        image_data = byte_io.getvalue()
-
         audio = MP3(mp3_path, ID3=ID3)
         try:
             audio.add_tags()
         except error:
             pass
 
-        audio.tags.delall("APIC")
-        audio.tags.add(
-            APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=image_data)
-        )
+        with open(thumb_path, "rb") as img:
+            audio.tags.add(
+                APIC(mime="image/jpeg", type=3, desc="Cover", data=img.read())
+            )
         audio.save()
+
+        if os.path.exists(thumb_path):
+            os.remove(thumb_path)
 
         update_progress(f"✅ Nhúng xong: {title}", "green")
     except:
-        update_progress(f"❌ Lỗi nhúng ảnh: {title}", "red")
+        return
 
 
-# ====== TẢI VIDEO ĐÃ CHỌN ======
+# ====== TẢI VIDEO ĐƯỢC CHỌN ======
 def download_selected():
     url = entry_url.get()
     if not url or not playlist_videos:
-        messagebox.showwarning(
-            "Thiếu dữ liệu", "Vui lòng nhập URL và phân tích playlist trước."
-        )
+        messagebox.showwarning("Thiếu dữ liệu", "Nhập URL và phân tích trước.")
         return
 
     selected = [v for v, check in zip(playlist_videos, video_vars) if check.get()]
     if not selected:
-        messagebox.showinfo("Không có video", "Bạn chưa chọn video nào để tải.")
+        messagebox.showinfo("Không có video", "Chưa chọn video để tải.")
         return
 
     custom_subfolder = subfolder_entry.get().strip()
     if not custom_subfolder:
-        messagebox.showwarning("Thiếu thư mục", "Vui lòng nhập tên subfolder.")
+        messagebox.showwarning("Thiếu thư mục", "Nhập tên subfolder.")
         return
 
     safe_subfolder = re.sub(
@@ -250,47 +297,89 @@ def download_selected():
         return
 
     btn_download.config(state=tk.DISABLED)
+    update_progress("🔁 Đang bắt đầu tải xuống...", "orange")  # ✅ Thêm dòng này
 
     def threaded_download():
-        download_results = []
-        for idx, v in enumerate(selected, 1):
-            update_progress(
-                f"⬇️ [{idx}/{len(selected)}] Đang tải: {v['title']}", "orange"
+        total = len(selected)
+        completed = 0
+
+        def download_with_progress(video):
+            result = download_audio_and_thumbnail(video, target_folder)
+            nonlocal completed
+            completed += 1
+            short_title = (
+                video["title"][:50] + "..."
+                if len(video["title"]) > 50
+                else video["title"]
             )
-            result = download_audio_and_thumbnail(v, target_folder)
-            if result:
-                download_results.append(result)
+            update_progress(f"✅ Đã xong {completed}/{total}: {short_title}", "orange")
 
-        update_progress("🖼️ Đang nhúng thumbnail...", "blue")
+            return result
+
+        with ThreadPoolExecutor(max_workers=5) as pool1:
+            results = list(pool1.map(download_with_progress, selected))
+
+        update_progress("🖼️ Nhúng thumbnail vào MP3...", "blue")
         with ThreadPoolExecutor(max_workers=3) as pool2:
-            pool2.map(lambda args: embed_thumbnail(*args), download_results)
+            pool2.map(lambda args: embed_thumbnail(*args), [r for r in results if r])
 
-        update_progress("🎉 Hoàn tất tất cả!", "green")
+        update_progress("🎉 Hoàn tất tải và xử lý!", "green")
+
+        if psp_var.get():
+            update_progress("🪥 Đang tối ưu cho PSP...", "blue")
+            try:
+                renamed = 0
+                resized = 0
+                skipped = []
+
+                for filename in os.listdir(target_folder):
+                    if filename.lower().endswith(".mp3"):
+                        result, name = process_mp3_file(target_folder, filename)
+                        if result == "xong":
+                            renamed += 1
+                            resized += 1
+                        elif result == "trùng tên":
+                            skipped.append(name + " (trùng)")
+                        elif result == "không có thumbnail":
+                            skipped.append(name + " (thiếu thumbnail)")
+                        elif result == "thiếu ID3":
+                            skipped.append(name + " (không có ID3 tag)")
+                        else:
+                            skipped.append(name + f" ({result})")
+
+                msg = f"✅ Đã tối ưu {renamed} file MP3.\n"
+                if skipped:
+                    msg += f"\n⚠️ {len(skipped)} file bỏ qua hoặc lỗi:\n" + "\n".join(
+                        skipped
+                    )
+                messagebox.showinfo("🌿 PSP Ready", msg)
+            except Exception as e:
+                update_progress(f"❌ Lỗi PSP: {e}", "red")
+
+        update_progress("🎉 Hoàn tất toàn bộ quá trình tải và xử lý!", "green")
         btn_download.config(state=tk.NORMAL)
 
     threading.Thread(target=threaded_download).start()
 
 
-# ====== GIAO DIỆN GUI ======
+# ====== GUI ======
 app = tk.Tk()
 app.title("YouTube Playlist to MP3 Downloader")
-app.geometry("620x720")
+app.geometry("620x700+50+30")
 app.resizable(False, False)
 
 tk.Label(app, text="🎵 Nhập link playlist YouTube:", font=("Arial", 12)).pack(pady=5)
 entry_url = tk.Entry(app, width=75)
 entry_url.pack(pady=5)
 
-btn_folder = tk.Button(
+tk.Button(
     app, text="📂 Chọn thư mục lưu", font=("Arial", 10), command=choose_folder
-)
-btn_folder.pack(pady=5)
-
+).pack(pady=5)
 folder_label = tk.Label(app, text=f"📁 Lưu tại: {download_folder}", font=("Arial", 10))
 folder_label.pack(pady=2)
 
 frame_quality = tk.Frame(app)
-tk.Label(frame_quality, text="🎷 Chọn chất lượng:", font=("Arial", 10)).pack(
+tk.Label(frame_quality, text="🎧 Chọn chất lượng:", font=("Arial", 10)).pack(
     side="left", padx=5
 )
 quality_box = ttk.Combobox(
@@ -304,14 +393,17 @@ tk.Label(app, text="📂 Tên thư mục con:", font=("Arial", 10)).pack(pady=3)
 subfolder_entry = tk.Entry(app, width=40)
 subfolder_entry.pack(pady=2)
 
-remove_diacritics_var = tk.BooleanVar(value=False)
-tk.Checkbutton(app, text="🅰️ Bỏ dấu tên bài hát", variable=remove_diacritics_var).pack(
-    pady=2
-)
-
 tk.Button(
     app, text="🔍 Phân tích playlist", font=("Arial", 11), command=analyze_playlist
 ).pack(pady=8)
+
+psp_var = tk.BooleanVar()
+tk.Checkbutton(
+    app,
+    text="🌊 Tối ưu cho PSP (xóa dấu + thumbnail 128x128)",
+    variable=psp_var,
+    font=("Arial", 10),
+).pack(pady=3)
 
 list_container = tk.Frame(app)
 list_container.pack(fill="both", expand=True, padx=10, pady=5)
