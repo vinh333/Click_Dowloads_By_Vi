@@ -8,9 +8,10 @@ import unicodedata
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, APIC, error
 from PIL import Image
+import io
 from concurrent.futures import ThreadPoolExecutor
 
-# ====== CẤU HÌNH MẶC ĐỊNH ======
+# ====== CẤU HÌNH MẦC ĐỊNH ======
 default_download_path = os.path.join(os.path.expanduser("~"), "Downloads")
 if not os.path.exists(default_download_path):
     os.makedirs(default_download_path)
@@ -21,7 +22,7 @@ video_vars = []
 quality = "192"
 
 
-# ====== HÀM BỎ DẤU ======
+# ====== HÀM BỚ DẤU ======
 def remove_accents(input_str):
     nfkd_form = unicodedata.normalize("NFKD", input_str)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
@@ -36,7 +37,7 @@ def choose_folder():
         folder_label.config(text=f"📁 Lưu tại: {download_folder}")
 
 
-# ====== CẬP NHẬT TIẾN TRÌNH ======
+# ====== CẤP NHẬT TIẾN TRÌNH ======
 def update_progress(msg, color="blue"):
     progress_label.config(text=msg, fg=color)
 
@@ -83,7 +84,6 @@ def analyze_playlist():
                         results = list(executor.map(extract_entry, entries))
 
                     playlist_videos = [v for v in results if v]
-                    print(f"Tìm thấy {len(playlist_videos)} video.")
 
                 else:
                     playlist_title = re.sub(
@@ -182,7 +182,7 @@ def download_audio_and_thumbnail(video, target_folder):
     return (mp3_file, thumb_path, title)
 
 
-# ====== NHÚNG ẢNH VÀO MP3 ======
+# ====== NHÚNG ẢNH VÀO MP3 (CHUẨN PSP) ======
 def embed_thumbnail(mp3_path, thumb_path, title):
     if not mp3_path or not thumb_path:
         return
@@ -197,24 +197,27 @@ def embed_thumbnail(mp3_path, thumb_path, title):
             except:
                 return
 
+        im = Image.open(thumb_path).convert("RGB")
+        im = im.resize((128, 128))
+        byte_io = io.BytesIO()
+        im.save(byte_io, format="JPEG")
+        image_data = byte_io.getvalue()
+
         audio = MP3(mp3_path, ID3=ID3)
         try:
             audio.add_tags()
         except error:
             pass
 
-        with open(thumb_path, "rb") as img:
-            audio.tags.add(
-                APIC(mime="image/jpeg", type=3, desc="Cover", data=img.read())
-            )
+        audio.tags.delall("APIC")
+        audio.tags.add(
+            APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=image_data)
+        )
         audio.save()
-
-        if os.path.exists(thumb_path):
-            os.remove(thumb_path)
 
         update_progress(f"✅ Nhúng xong: {title}", "green")
     except:
-        return
+        update_progress(f"❌ Lỗi nhúng ảnh: {title}", "red")
 
 
 # ====== TẢI VIDEO ĐÃ CHỌN ======
@@ -287,7 +290,7 @@ folder_label = tk.Label(app, text=f"📁 Lưu tại: {download_folder}", font=("
 folder_label.pack(pady=2)
 
 frame_quality = tk.Frame(app)
-tk.Label(frame_quality, text="🎧 Chọn chất lượng:", font=("Arial", 10)).pack(
+tk.Label(frame_quality, text="🎷 Chọn chất lượng:", font=("Arial", 10)).pack(
     side="left", padx=5
 )
 quality_box = ttk.Combobox(
